@@ -5,31 +5,38 @@ using System;
 [ExecuteAlways] // editor preview grid via Gizmos
 public class SPHSimulation : MonoBehaviour
 {
-    public Vector2 boundsSize = new Vector2(5, 3);
+    public Vector2 boundsSize;
     public int numParticles = 400;
 
     [Header("Rendering (Gizmos)")]
     public bool renderWithGizmos = true;
-    public float gizmoRadius = 0.025f;      
+    public float gizmoRadius = 0.025f;
+    public Gradient speedGradient;   
     [Range(0.1f, 0.95f)]
     public float fillFraction = 0.65f;      
 
     [Header("Physics")]
-    public float collisionDamping = 0.5f;
-    public float gravity = 0f;
+    public float collisionDamping;
+    public float gravity;
     public float targetDensity = 3.0f;
-    public float pressureMultiplier = 0.5f;
-    public float smoothingRadius = 0.2f;    
+    public float pressureMultiplier;
+    public float smoothingRadius;
+    
+    [Header("Interaction")]
+    public float interactionRadius;
+    public float interactionStrength;    
 
     public class Entry {
         public int particleIndex;
         public uint cellKey;
     }
     Vector2[] positions;
+    Vector2[] predictedPositions;
     Vector2[] velocities;
     float[] densities;
     Entry[] spatialLookup;
     int[] startIndices;
+    
 
     float particleMass; 
 
@@ -54,32 +61,61 @@ public class SPHSimulation : MonoBehaviour
         if (!Application.isPlaying) return;
 
         positions  = new Vector2[numParticles];
+        predictedPositions = new Vector2[numParticles];
         velocities = new Vector2[numParticles];
         densities  = new float[numParticles];
         spatialLookup = new Entry[numParticles];
         startIndices = new int[numParticles];
 
-        float dx = CreateParticles();
+        CreateParticles();
+        float dx = Mathf.Sqrt((boundsSize.x * boundsSize.y) / numParticles);
 
         particleMass    = targetDensity * dx * dx;
-        smoothingRadius = 1.45f * dx;
+        smoothingRadius = 1.4f * dx;
     }
 
-    void Update()
-    {
+    void Update() {
         if (!Application.isPlaying) return;
 
         float dt = Time.deltaTime;
-        int substeps = 5;
+
+        int substeps = 3;
         float subDt = dt / substeps;
 
-        for (int s = 0; s < substeps; ++s)
-            SimulationStep(subDt);
+        for (int s = 0; s < substeps; ++s) SimulationStep(subDt);
+    }
+    
+    Vector2 GetMouseWorldPosition() {
+        // Convert mouse screen position to world position
+        Camera cam = Camera.main;
+        if (cam == null) return Vector2.zero;
+        
+        Vector3 mouseScreenPos = Input.mousePosition;
+        mouseScreenPos.z = cam.nearClipPlane + 1f; // Set depth for 2D
+        
+        Vector3 mouseWorldPos3D = cam.ScreenToWorldPoint(mouseScreenPos);
+        Vector2 mouseWorldPos = new Vector2(mouseWorldPos3D.x, mouseWorldPos3D.y);
+        
+        // Account for VisualScale to convert from visual space to simulation space
+        float visualScale = SimSettings.VisualScale;
+        mouseWorldPos /= visualScale;
+        
+        return mouseWorldPos;
+    }
+    
+    void ApplyInteractionForce(Vector2 interactionPosition, float strength, float dt) {
+        if (positions == null || velocities == null) return;
+        
+        // Loop through all particles and apply interaction force
+        for (int i = 0; i < positions.Length; i++) {
+            Vector2 force = InteractionForce(interactionPosition, interactionRadius, strength, i);
+            // Apply force to velocity
+            velocities[i] += force * dt;
+        }
     }
 
 #if UNITY_EDITOR
-    void OnDrawGizmos()
-    {
+    void OnDrawGizmos() {
         if (!renderWithGizmos) return;
 
         Gizmos.color = Color.gray;
@@ -111,8 +147,32 @@ public class SPHSimulation : MonoBehaviour
         }
 
         // Playing (or arrays ready): draw actual simulated positions
+        // Calculate speed range for color mapping
+        float minSpeed = float.MaxValue;
+        float maxSpeed = float.MinValue;
         for (int i = 0; i < positions.Length; i++)
+        {
+            float speed = velocities[i].magnitude;
+            if (speed < minSpeed) minSpeed = speed;
+            if (speed > maxSpeed) maxSpeed = speed;
+        }
+        
+        // Draw particles with speed-based coloring (blue = slow, red = fast)
+        for (int i = 0; i < positions.Length; i++)
+        {
+            float speed = velocities[i].magnitude;
+            float normalizedSpeed = 0f;
+            
+            // Normalize speed to 0-1 range
+            if (maxSpeed > minSpeed)
+            {
+                normalizedSpeed = (speed - minSpeed) / (maxSpeed - minSpeed);
+            }
+            
+            // Interpolate from blue (slow) to red (fast)
+            Gizmos.color = speedGradient.Evaluate(normalizedSpeed);
             Gizmos.DrawSphere((Vector3)positions[i] * s, gizmoRadius * s);
+        }
     }
 #endif
 
@@ -131,8 +191,7 @@ public class SPHSimulation : MonoBehaviour
                             -halfR.y + 0.5f * (region.y - usedH));
     }
 
-    float CreateParticles()
-    {
+    float CreateParticles() {
         ComputeCenteredGrid(out int cols, out int rows, out float dx, out Vector2 origin);
 
 
@@ -153,12 +212,33 @@ public class SPHSimulation : MonoBehaviour
     }
 
     // ----------------- Simulation -----------------
-    void SimulationStep(float dt)
-    {
+    void SimulationStep(float dt) {
+
+        // Interaction force (mouse input)
+        if (positions != null && positions.Length > 0) {
+            // Left click: push away (negative strength)
+            if (Input.GetMouseButton(0)) {
+                Vector2 mouseWorldPos = GetMouseWorldPosition();
+                ApplyInteractionForce(mouseWorldPos, -interactionStrength, dt);
+            }
+            
+            // Right click: pull in (positive strength)
+            if (Input.GetMouseButton(1)) {
+                Vector2 mouseWorldPos = GetMouseWorldPosition();
+                ApplyInteractionForce(mouseWorldPos, interactionStrength, dt);
+            }
+        }
+
         // Gravity + density pass
         System.Threading.Tasks.Parallel.For(0, numParticles, i => {
             velocities[i] += Vector2.down * gravity * dt;
-            densities[i] = CalculateDensity(positions[i]);
+            predictedPositions[i] = positions[i] + velocities[i] * dt;
+        });
+
+        UpdateSpatialLookup(predictedPositions, smoothingRadius);
+
+        System.Threading.Tasks.Parallel.For(0, numParticles, i => {
+            densities[i] = CalculateDensity(predictedPositions[i]);
         });
 
         // Pressure force pass
@@ -186,32 +266,32 @@ public class SPHSimulation : MonoBehaviour
         return -12f * (radius - dist) / (Mathf.PI * Mathf.Pow(radius, 4));
     }
 
-    float CalculateDensity(Vector2 sample) {
+    float CalculateDensity(Vector2 pos_i) {
         float density = 0f;
-        for (int i = 0; i < numParticles; i++) {
-            float dist = (positions[i] - sample).magnitude;
-            float influence = SmoothingKernel(smoothingRadius, dist);
-            density += particleMass * influence;
-        }
+        RadiusStabilizer(pos_i, smoothingRadius, (j) => {
+            float dist = (predictedPositions[j] - pos_i).magnitude;
+            float w = SmoothingKernel(smoothingRadius, dist);
+            density += particleMass * w;
+        });
         return density;
     }
 
-    Vector2 CalculatePressureForce(int particleIndex) {
+    Vector2 CalculatePressureForce(int i) {
         Vector2 pressureForce = Vector2.zero;
-        for (int j = 0; j < numParticles; j++) {
-            if (j == particleIndex) continue;
+        Vector2 pos_i = predictedPositions[i];
+        RadiusStabilizer(pos_i, smoothingRadius, (j) => {
+            if (j == i) return;
 
-            Vector2 offset = positions[j] - positions[particleIndex];
-            float dst = offset.magnitude;
-            if (dst <= 0f) continue;
+            Vector2 offset = predictedPositions[j] - predictedPositions[i];
+            float dist = offset.magnitude;
+            if (dist <= 0f) return;
 
-            Vector2 direction = dst == 0? GetRandomDir() : offset / dst;
-            float slope = SmoothingKernelDerivative(smoothingRadius, dst);
-            float density = densities[j]; 
-            float sharedPressure = CalculateSharedPressure(density, densities[particleIndex]);
-
+            Vector2 direction = offset / dist;
+            float slope = SmoothingKernelDerivative(smoothingRadius, dist);
+            float density = densities[j];
+            float sharedPressure = CalculateSharedPressure(density, densities[i]);
             pressureForce += sharedPressure * particleMass / density * slope * direction;
-        }
+        });
         return pressureForce;
     }
 
@@ -223,6 +303,20 @@ public class SPHSimulation : MonoBehaviour
 
     float ConvertDensityToPressure(float density) {
         return (density - targetDensity) * pressureMultiplier;
+    }
+
+    Vector2 InteractionForce(Vector2 inputPos, float radius, float strength, int particleIndex) {
+        Vector2 interactionForce = Vector2.zero;
+        Vector2 offset = inputPos - positions[particleIndex];
+        float sqrDst = Vector2.Dot(offset, offset);
+
+        if (sqrDst < radius * radius) {
+            float dst = Mathf.Sqrt(sqrDst);
+            Vector2 dirToInputPoint = dst <= float.Epsilon ? Vector2.zero : offset / dst;
+            float centreT = 1f - dst/radius;
+            interactionForce += (dirToInputPoint * strength - velocities[particleIndex]) * centreT;
+        }
+        return interactionForce;
     }
 
     void ResolveCollisions(ref Vector2 pos, ref Vector2 vel) {
@@ -275,7 +369,7 @@ public class SPHSimulation : MonoBehaviour
     public uint GetKeyFromHash(uint hash) {
         return hash % (uint) spatialLookup.Length;
     }
-    public void RadiusStabilizer(Vector2 sample, float radius) {
+    public void RadiusStabilizer(Vector2 sample, float radius, Action<int> handleNeighbor) {
         (int centerX, int centerY) = PositionToCellCoord(sample, radius);
         float sqrRadius = radius * radius;
 
@@ -283,16 +377,15 @@ public class SPHSimulation : MonoBehaviour
             uint key = GetKeyFromHash(HashCell(centerX + offs.x, centerY + offs.y));
             int cellStart = startIndices[key];
 
-            int i = cellStart;
+
             for (int i = cellStart; i < spatialLookup.Length; i++)  {
                 if (spatialLookup[i].cellKey != key) break;
                 int particleIndex = spatialLookup[i].particleIndex;
                 float sqrDst = (positions[particleIndex] - sample).sqrMagnitude;
 
                 if (sqrDst <= sqrRadius) {
-                    //update a particles density and pressure Forces
+                    handleNeighbor(particleIndex);
                 }
-                i += 1;
             }
         }
     }

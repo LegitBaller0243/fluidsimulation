@@ -156,7 +156,7 @@ Camera:
   m_Enabled: 1
   serializedVersion: 2
   m_ClearFlags: 2
-  m_BackGroundColor: {r: 0.18111429, g: 0.19244267, b: 0.20754719, a: 0}
+  m_BackGroundColor: {r: 0, g: 0.03451449, b: 0.14150941, a: 0}
   m_projectionMatrixMode: 1
   m_GateFitMode: 2
   m_FOVAxisMode: 0
@@ -393,16 +393,48 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: d561b067ed1254f92bd859c840da43c2, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  boundsSize: {x: 12, y: 6.7}
-  numParticles: 420
+  boundsSize: {x: 9, y: 5.025}
+  numParticles: 1350
   renderWithGizmos: 1
   gizmoRadius: 0.025
-  fillFraction: 0.65
-  collisionDamping: 0.95
+  speedGradient:
+    serializedVersion: 2
+    key0: {r: 0.09927912, g: 0.30051878, b: 0.9150943, a: 1}
+    key1: {r: 0.1779548, g: 0.8773585, b: 0.19098288, a: 1}
+    key2: {r: 0.83501434, g: 0.8773585, b: 0.07863116, a: 0}
+    key3: {r: 0.9245283, g: 0.11774653, b: 0.11774653, a: 0}
+    key4: {r: 0, g: 0, b: 0, a: 0}
+    key5: {r: 0, g: 0, b: 0, a: 0}
+    key6: {r: 0, g: 0, b: 0, a: 0}
+    key7: {r: 0, g: 0, b: 0, a: 0}
+    ctime0: 14722
+    ctime1: 29105
+    ctime2: 41634
+    ctime3: 65535
+    ctime4: 0
+    ctime5: 0
+    ctime6: 0
+    ctime7: 0
+    atime0: 0
+    atime1: 65535
+    atime2: 0
+    atime3: 0
+    atime4: 0
+    atime5: 0
+    atime6: 0
+    atime7: 0
+    m_Mode: 0
+    m_ColorSpace: -1
+    m_NumColorKeys: 4
+    m_NumAlphaKeys: 2
+  fillFraction: 0.756
+  collisionDamping: 0.96
   gravity: 0
   targetDensity: 2.8
-  pressureMultiplier: 0.1
+  pressureMultiplier: 25
   smoothingRadius: 0.96
+  interactionRadius: 3
+  interactionStrength: 10
 --- !u!4 &1655073527
 Transform:
   m_ObjectHideFlags: 0
