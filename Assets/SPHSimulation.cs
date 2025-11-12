@@ -18,8 +18,10 @@ public class SPHSimulation : MonoBehaviour
     [Header("Physics")]
     public float collisionDamping;
     public float gravity;
+    public float viscosityStrength;
     public float targetDensity = 3.0f;
     public float pressureMultiplier;
+    public float nearPressureMultiplier;
     public float smoothingRadius;
     
     [Header("Interaction")]
@@ -34,6 +36,7 @@ public class SPHSimulation : MonoBehaviour
     Vector2[] predictedPositions;
     Vector2[] velocities;
     float[] densities;
+    float[] nearDensities;
     Entry[] spatialLookup;
     int[] startIndices;
     
@@ -64,6 +67,7 @@ public class SPHSimulation : MonoBehaviour
         predictedPositions = new Vector2[numParticles];
         velocities = new Vector2[numParticles];
         densities  = new float[numParticles];
+        nearDensities = new float[numParticles];
         spatialLookup = new Entry[numParticles];
         startIndices = new int[numParticles];
 
@@ -102,12 +106,14 @@ public class SPHSimulation : MonoBehaviour
         
         return mouseWorldPos;
     }
-    
-    void ApplyInteractionForce(Vector2 interactionPosition, float strength, float dt) {
+
+    void ApplyInteractionForce(Vector2 interactionPosition, float strength, float dt)
+    {
         if (positions == null || velocities == null) return;
-        
+
         // Loop through all particles and apply interaction force
-        for (int i = 0; i < positions.Length; i++) {
+        for (int i = 0; i < positions.Length; i++)
+        {
             Vector2 force = InteractionForce(interactionPosition, interactionRadius, strength, i);
             // Apply force to velocity
             velocities[i] += force * dt;
@@ -156,20 +162,29 @@ public class SPHSimulation : MonoBehaviour
             if (speed < minSpeed) minSpeed = speed;
             if (speed > maxSpeed) maxSpeed = speed;
         }
+
         
-        // Draw particles with speed-based coloring (blue = slow, red = fast)
         for (int i = 0; i < positions.Length; i++)
         {
             float speed = velocities[i].magnitude;
+
+            // Handle invalid speed values
+            if (float.IsNaN(speed) || float.IsInfinity(speed))
+                speed = 0f;
+
+            // Normalize speed to [0, 1]
             float normalizedSpeed = 0f;
-            
-            // Normalize speed to 0-1 range
-            if (maxSpeed > minSpeed)
+            if (maxSpeed > minSpeed && !float.IsNaN(minSpeed) && !float.IsNaN(maxSpeed))
             {
                 normalizedSpeed = (speed - minSpeed) / (maxSpeed - minSpeed);
+
+                // Clamp to [0, 1] in case of rounding or division issues
+                normalizedSpeed = Mathf.Clamp01(normalizedSpeed);
             }
-            
-            // Interpolate from blue (slow) to red (fast)
+
+            // Fallback if range invalid
+            if (float.IsNaN(normalizedSpeed) || float.IsInfinity(normalizedSpeed))
+                normalizedSpeed = 0f;
             Gizmos.color = speedGradient.Evaluate(normalizedSpeed);
             Gizmos.DrawSphere((Vector3)positions[i] * s, gizmoRadius * s);
         }
@@ -205,6 +220,7 @@ public class SPHSimulation : MonoBehaviour
                 positions[k]  = new Vector2(x, y);
                 velocities[k] = Vector2.zero;
                 densities[k]  = 0f;
+                nearDensities[k] = 0f;
                 k++;
             }
         }
@@ -237,15 +253,29 @@ public class SPHSimulation : MonoBehaviour
 
         UpdateSpatialLookup(predictedPositions, smoothingRadius);
 
-        System.Threading.Tasks.Parallel.For(0, numParticles, i => {
+        System.Threading.Tasks.Parallel.For(0, numParticles, i =>
+        {
             densities[i] = CalculateDensity(predictedPositions[i]);
+        });
+        System.Threading.Tasks.Parallel.For(0, numParticles, i =>
+        {
+            nearDensities[i] = CalculateNearDensity(predictedPositions[i]);
         });
 
         // Pressure force pass
-        System.Threading.Tasks.Parallel.For(0, numParticles, i => {
+        System.Threading.Tasks.Parallel.For(0, numParticles, i =>
+        {
             Vector2 pressureForce = CalculatePressureForce(i);
-            Vector2 pressureAcceleration = pressureForce / densities[i]; 
+            Vector2 pressureAcceleration = pressureForce / densities[i];
             velocities[i] += pressureAcceleration * dt;
+        });
+
+        // Viscosity Force Pass
+        System.Threading.Tasks.Parallel.For(0, numParticles, i =>
+        {
+            Vector2 viscosityForce = CalculateViscosityForce(i);
+            Vector2 viscosityAcceleration = viscosityForce / densities[i];
+            velocities[i] += viscosityAcceleration * dt;
         });
 
         // Integrate + collisions
@@ -255,31 +285,72 @@ public class SPHSimulation : MonoBehaviour
         });
     }
 
-    float SmoothingKernel(float radius, float dist) {
+    float SmoothingKernel(float radius, float dist)
+    {
         if (dist >= radius) return 0f;
         float volume = Mathf.PI * Mathf.Pow(radius, 4) / 6f;
         return (radius - dist) * (radius - dist) / volume;
     }
+    float NearDensitySmoothingKernel(float radius, float dist)
+    {
+        if (dist >= radius) return 0f;
+        float volume = Mathf.PI * Mathf.Pow(radius, 5) / 6f;
+        float value = radius - dist;
+        return value * value * value / volume;
+    }
 
-    float SmoothingKernelDerivative(float radius, float dist) {
+    float NearDensitySmoothingKernelDerivative(float radius, float dist)
+    {
+        if (dist >= radius) return 0f;
+        return -18f * (radius - dist) * (radius - dist) / (Mathf.PI * Mathf.Pow(radius, 5));
+    }
+
+
+    float SmoothingKernelDerivative(float radius, float dist)
+    {
         if (dist >= radius) return 0f;
         return -12f * (radius - dist) / (Mathf.PI * Mathf.Pow(radius, 4));
     }
+    
+    float ViscositySmoothingKernel(float radius, float dist)
+    // Poly6
+    {
+        if (dist >= radius) return 0f;
+        float volume = Mathf.PI * Mathf.Pow(radius, 8) / 4f;
+        float value = radius * radius - dist * dist;
+        return value * value * value / volume;
+    }
 
-    float CalculateDensity(Vector2 pos_i) {
+    float CalculateDensity(Vector2 pos_i)
+    {
         float density = 0f;
-        RadiusStabilizer(pos_i, smoothingRadius, (j) => {
+        RadiusStabilizer(pos_i, smoothingRadius, (j) =>
+        {
             float dist = (predictedPositions[j] - pos_i).magnitude;
             float w = SmoothingKernel(smoothingRadius, dist);
             density += particleMass * w;
         });
         return density;
     }
+    
+    float CalculateNearDensity(Vector2 pos_i)
+    {
+        float nearDensity = 0f;
+        RadiusStabilizer(pos_i, smoothingRadius, (j) =>
+        {
+            float dist = (predictedPositions[j] - pos_i).magnitude;
+            float w = NearDensitySmoothingKernel(smoothingRadius, dist);
+            nearDensity += particleMass * w;
+        });
+        return nearDensity;
+    }
 
-    Vector2 CalculatePressureForce(int i) {
+    Vector2 CalculatePressureForce(int i)
+    {
         Vector2 pressureForce = Vector2.zero;
         Vector2 pos_i = predictedPositions[i];
-        RadiusStabilizer(pos_i, smoothingRadius, (j) => {
+        RadiusStabilizer(pos_i, smoothingRadius, (j) =>
+        {
             if (j == i) return;
 
             Vector2 offset = predictedPositions[j] - predictedPositions[i];
@@ -287,22 +358,53 @@ public class SPHSimulation : MonoBehaviour
             if (dist <= 0f) return;
 
             Vector2 direction = offset / dist;
+            // Standard pressure component
             float slope = SmoothingKernelDerivative(smoothingRadius, dist);
             float density = densities[j];
             float sharedPressure = CalculateSharedPressure(density, densities[i]);
             pressureForce += sharedPressure * particleMass / density * slope * direction;
+
+            // Near-pressure component
+            float nearSlope = NearDensitySmoothingKernelDerivative(smoothingRadius, dist);
+            float nearDensity = nearDensities[j];
+            float sharedNearPressure = CalculateNearSharedPressure(nearDensity, nearDensities[i]);
+            pressureForce += sharedNearPressure * particleMass / density * nearSlope * direction;
         });
         return pressureForce;
     }
+    Vector2 CalculateViscosityForce(int i)
+    {
+        Vector2 viscosityForce = Vector2.zero;
+        Vector2 position = positions[i];
+        RadiusStabilizer(position, smoothingRadius, (j) =>
+        {
+            float dist = (position - positions[j]).magnitude;
+            float influence = ViscositySmoothingKernel(smoothingRadius, dist);
+            viscosityForce += (velocities[j] - velocities[i]) * influence;
+        });
+        return viscosityForce * viscosityStrength;
+    }
 
-    float CalculateSharedPressure(float densityA, float densityB) {
+    float CalculateSharedPressure(float densityA, float densityB)
+    {
         float pressureA = ConvertDensityToPressure(densityA);
         float pressureB = ConvertDensityToPressure(densityB);
         return 0.5f * (pressureA + pressureB);
     }
+    float CalculateNearSharedPressure(float nearDensityA, float nearDensityB)
+    {
+        float nearPressureA = convertNearDensityToPressure(nearDensityA);
+        float nearPressureB = convertNearDensityToPressure(nearDensityB);
+        return 0.5f * (nearPressureA + nearPressureB);
+    }
 
     float ConvertDensityToPressure(float density) {
-        return (density - targetDensity) * pressureMultiplier;
+        float densityError = density - targetDensity;
+        float pressure = densityError * pressureMultiplier;
+        return pressure;
+    }
+    float convertNearDensityToPressure(float nearDensity) {
+        return nearDensity * nearPressureMultiplier;
     }
 
     Vector2 InteractionForce(Vector2 inputPos, float radius, float strength, int particleIndex) {

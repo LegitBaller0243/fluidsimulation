@@ -394,7 +394,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   boundsSize: {x: 9, y: 5.025}
-  numParticles: 1350
+  numParticles: 1537
   renderWithGizmos: 1
   gizmoRadius: 0.025
   speedGradient:
@@ -430,8 +430,10 @@ MonoBehaviour:
   fillFraction: 0.756
   collisionDamping: 0.96
   gravity: 0
+  viscosityStrength: 0.3
   targetDensity: 2.8
   pressureMultiplier: 25
+  nearPressureMultiplier: 0
   smoothingRadius: 0.96
   interactionRadius: 3
   interactionStrength: 10
